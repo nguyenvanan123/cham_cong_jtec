@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import type { AttendanceRecord } from "@/lib/supabase";
 import { Link } from "wouter";
-import { Camera, Search, X, ChevronLeft, ChevronRight, ArrowLeft } from "lucide-react";
+import { Camera, Search, X, ChevronLeft, ChevronRight, Lock, Eye, EyeOff, LogOut, ShieldCheck } from "lucide-react";
 
 type FilterStatus = "all" | "complete" | "incomplete";
 
@@ -18,7 +18,118 @@ function groupByEmployee(records: AttendanceRecord[]) {
   return Array.from(map.values());
 }
 
-export default function Admin() {
+// ──────────────────────────────────────────
+// Màn hình đăng nhập Admin
+// ──────────────────────────────────────────
+function AdminLogin({ onLogin }: { onLogin: () => void }) {
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password.trim()) return;
+    setLoading(true);
+    setError("");
+
+    const { data } = await supabase
+      .from("configs")
+      .select("value")
+      .eq("key", "admin_password")
+      .single();
+
+    if (data && data.value === password.trim()) {
+      // Lưu trạng thái đăng nhập vào sessionStorage
+      sessionStorage.setItem("admin_auth", "true");
+      onLogin();
+    } else {
+      setError("Mật khẩu không đúng. Vui lòng thử lại.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        {/* Logo */}
+        <div className="text-center mb-8 space-y-2">
+          <div className="w-16 h-16 bg-primary/20 border border-primary/30 rounded-2xl flex items-center justify-center mx-auto">
+            <ShieldCheck size={32} className="text-primary" />
+          </div>
+          <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
+          <p className="text-slate-400 text-sm">Đăng nhập để quản lý hệ thống</p>
+        </div>
+
+        {/* Form */}
+        <form
+          onSubmit={handleLogin}
+          className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-6 space-y-4"
+        >
+          <div>
+            <label className="text-sm font-medium text-slate-300 mb-1.5 block">Mật khẩu Admin</label>
+            <div className="relative">
+              <input
+                data-testid="input-admin-password"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={e => { setPassword(e.target.value); setError(""); }}
+                placeholder="Nhập mật khẩu..."
+                autoFocus
+                className="w-full px-4 py-3 pr-10 rounded-xl bg-white/10 border border-white/20 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-primary/60 transition"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(s => !s)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition"
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {error && (
+              <p data-testid="login-error" className="text-red-400 text-xs mt-1.5 flex items-center gap-1">
+                <Lock size={12} />
+                {error}
+              </p>
+            )}
+          </div>
+
+          <button
+            type="submit"
+            data-testid="btn-admin-login"
+            disabled={loading || !password.trim()}
+            className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {loading ? "Đang kiểm tra..." : "Đăng nhập"}
+          </button>
+        </form>
+
+        {/* Gợi ý setup */}
+        <div className="mt-4 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
+          <p className="text-amber-300 text-xs font-medium mb-1">Chưa có mật khẩu?</p>
+          <p className="text-slate-400 text-xs">Chạy SQL sau trong Supabase:</p>
+          <code className="block mt-1 text-xs text-slate-300 bg-black/30 rounded-lg px-3 py-2 font-mono break-all">
+            INSERT INTO configs (key, value) VALUES ('admin_password', 'matkhaucuaban');
+          </code>
+        </div>
+
+        <div className="mt-4 text-center">
+          <Link
+            href="/"
+            className="text-slate-500 hover:text-slate-300 text-xs transition"
+          >
+            Quay lại trang chấm công
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────
+// Dashboard Admin (sau khi đăng nhập)
+// ──────────────────────────────────────────
+function AdminDashboard({ onLogout }: { onLogout: () => void }) {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterEmployeeId, setFilterEmployeeId] = useState("");
@@ -57,15 +168,20 @@ export default function Admin() {
   const totalPages = Math.ceil(filtered.length / PER_PAGE);
   const paginated = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
 
+  const handleLogout = () => {
+    sessionStorage.removeItem("admin_auth");
+    onLogout();
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
       <header className="bg-white/90 backdrop-blur-md border-b border-border sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ArrowLeft size={18} className="text-muted-foreground" />
+            <ShieldCheck size={20} className="text-primary" />
             <span className="font-bold text-foreground text-lg">Admin Dashboard</span>
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-1 items-center">
             <Link
               href="/"
               className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg text-muted-foreground hover:bg-accent transition"
@@ -80,6 +196,14 @@ export default function Admin() {
               <Search size={14} />
               Tra cứu
             </Link>
+            <button
+              data-testid="btn-logout"
+              onClick={handleLogout}
+              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg text-red-500 hover:bg-red-50 transition ml-1"
+            >
+              <LogOut size={14} />
+              Đăng xuất
+            </button>
           </div>
         </div>
       </header>
@@ -263,4 +387,19 @@ export default function Admin() {
       )}
     </div>
   );
+}
+
+// ──────────────────────────────────────────
+// Wrapper: kiểm tra đăng nhập
+// ──────────────────────────────────────────
+export default function Admin() {
+  const [isAuthenticated, setIsAuthenticated] = useState(
+    () => sessionStorage.getItem("admin_auth") === "true"
+  );
+
+  if (!isAuthenticated) {
+    return <AdminLogin onLogin={() => setIsAuthenticated(true)} />;
+  }
+
+  return <AdminDashboard onLogout={() => setIsAuthenticated(false)} />;
 }

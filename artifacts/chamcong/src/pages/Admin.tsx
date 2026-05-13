@@ -2,12 +2,34 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import type { AttendanceRecord } from "@/lib/supabase";
 import { Link } from "wouter";
-import { Camera, Search, X, ChevronLeft, ChevronRight, Lock, Eye, EyeOff, LogOut, ShieldCheck } from "lucide-react";
+import {
+  Camera, Search, X, ChevronLeft, ChevronRight,
+  Lock, Eye, EyeOff, LogOut, ShieldCheck,
+  LayoutDashboard, ClipboardList, Settings,
+  Download, Trash2, CheckCircle, XCircle,
+  AlertCircle, Menu, Save, RefreshCw,
+  TrendingUp, Clock, CheckCheck
+} from "lucide-react";
 
+// ──────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────
 type FilterStatus = "all" | "complete" | "incomplete";
+type Tab = "overview" | "records" | "settings";
 
-function groupByEmployee(records: AttendanceRecord[]) {
-  const map = new Map<string, { employee_id: string; full_name: string; work_date: string; shift: string; records: AttendanceRecord[] }>();
+type GroupedEmployee = {
+  employee_id: string;
+  full_name: string;
+  work_date: string;
+  shift: string;
+  records: AttendanceRecord[];
+};
+
+// ──────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────
+function groupByEmployee(records: AttendanceRecord[]): GroupedEmployee[] {
+  const map = new Map<string, GroupedEmployee>();
   for (const r of records) {
     const key = `${r.employee_id}__${r.work_date}`;
     if (!map.has(key)) {
@@ -15,12 +37,520 @@ function groupByEmployee(records: AttendanceRecord[]) {
     }
     map.get(key)!.records.push(r);
   }
-  return Array.from(map.values());
+  return Array.from(map.values()).sort((a, b) => b.work_date.localeCompare(a.work_date));
 }
 
-// ──────────────────────────────────────────
-// Màn hình đăng nhập Admin
-// ──────────────────────────────────────────
+function todayStr() {
+  return new Date().toISOString().split("T")[0];
+}
+
+function exportCSV(grouped: GroupedEmployee[]) {
+  const rows = [
+    ["Mã NV", "Tên", "Ngày", "Ca", "Check-in", "Check-out", "Trạng thái"],
+    ...grouped.map(g => {
+      const inRec = g.records.find(r => r.action_type === "check-in");
+      const outRec = g.records.find(r => r.action_type === "check-out");
+      const status = inRec && outRec ? "Đủ" : inRec ? "Thiếu out" : outRec ? "Thiếu in" : "Thiếu";
+      return [
+        g.employee_id,
+        g.full_name,
+        g.work_date,
+        g.shift,
+        inRec ? new Date(inRec.created_at).toLocaleTimeString("vi-VN") : "-",
+        outRec ? new Date(outRec.created_at).toLocaleTimeString("vi-VN") : "-",
+        status,
+      ];
+    }),
+  ];
+  const csv = rows.map(r => r.map(c => `"${c}"`).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `chamcong_${todayStr()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ──────────────────────────────────────────────────────
+// Stat Card
+// ──────────────────────────────────────────────────────
+function StatCard({ label, value, icon, color }: { label: string; value: number | string; icon: React.ReactNode; color: string }) {
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-border shadow-sm flex items-center gap-4">
+      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${color}`}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-2xl font-bold text-foreground">{value}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
+// Mini Bar Chart (thay thế recharts để tránh cài thêm)
+// ──────────────────────────────────────────────────────
+function MiniBarChart({ data }: { data: { date: string; complete: number; incomplete: number }[] }) {
+  const max = Math.max(...data.map(d => d.complete + d.incomplete), 1);
+  return (
+    <div className="flex items-end gap-1.5 h-28">
+      {data.map((d, i) => {
+        const total = d.complete + d.incomplete;
+        const completeH = Math.round((d.complete / max) * 100);
+        const incompleteH = Math.round((d.incomplete / max) * 100);
+        return (
+          <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group relative">
+            <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-foreground text-background text-xs rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition whitespace-nowrap pointer-events-none z-10">
+              {d.date}: {total} lượt
+            </div>
+            <div className="w-full flex flex-col-reverse gap-px">
+              <div className="w-full bg-green-400 rounded-t transition-all" style={{ height: `${completeH}%`, minHeight: d.complete > 0 ? 4 : 0 }} />
+              <div className="w-full bg-red-300 rounded-t transition-all" style={{ height: `${incompleteH}%`, minHeight: d.incomplete > 0 ? 4 : 0 }} />
+            </div>
+            <span className="text-[10px] text-muted-foreground mt-1 hidden sm:block truncate w-full text-center">
+              {d.date.slice(5)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
+// Tab: Overview
+// ──────────────────────────────────────────────────────
+function OverviewTab({ allRecords }: { allRecords: AttendanceRecord[] }) {
+  const grouped = groupByEmployee(allRecords);
+  const today = todayStr();
+  const todayGrouped = grouped.filter(g => g.work_date === today);
+  const todayComplete = todayGrouped.filter(g => g.records.some(r => r.action_type === "check-in") && g.records.some(r => r.action_type === "check-out"));
+  const todayMissing = todayGrouped.length - todayComplete.length;
+
+  // 7 ngày gần nhất
+  const last7: { date: string; complete: number; incomplete: number }[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().split("T")[0];
+    const dayGroup = grouped.filter(g => g.work_date === dateStr);
+    const complete = dayGroup.filter(g => g.records.some(r => r.action_type === "check-in") && g.records.some(r => r.action_type === "check-out")).length;
+    last7.push({ date: dateStr, complete, incomplete: dayGroup.length - complete });
+  }
+
+  // Thống kê theo ca
+  const shiftMap = new Map<string, number>();
+  for (const g of grouped) {
+    shiftMap.set(g.shift, (shiftMap.get(g.shift) || 0) + 1);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Tổng lượt chấm" value={grouped.length} icon={<ClipboardList size={22} className="text-blue-600" />} color="bg-blue-50" />
+        <StatCard label="Hôm nay" value={todayGrouped.length} icon={<Clock size={22} className="text-indigo-600" />} color="bg-indigo-50" />
+        <StatCard label="Đủ hôm nay" value={todayComplete.length} icon={<CheckCheck size={22} className="text-green-600" />} color="bg-green-50" />
+        <StatCard label="Thiếu hôm nay" value={todayMissing} icon={<AlertCircle size={22} className="text-red-500" />} color="bg-red-50" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Biểu đồ 7 ngày */}
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-border shadow-sm p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-foreground text-sm">Chấm công 7 ngày gần nhất</h3>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-green-400 inline-block" />Đủ</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300 inline-block" />Thiếu</span>
+            </div>
+          </div>
+          <MiniBarChart data={last7} />
+        </div>
+
+        {/* Thống kê ca */}
+        <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
+          <h3 className="font-semibold text-foreground text-sm mb-4">Theo ca làm việc</h3>
+          <div className="space-y-3">
+            {Array.from(shiftMap.entries()).map(([shift, count]) => {
+              const pct = Math.round((count / grouped.length) * 100) || 0;
+              const shortShift = shift.split(" ")[0] + " " + shift.split(" ")[1];
+              return (
+                <div key={shift}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground truncate max-w-[140px]">{shortShift}</span>
+                    <span className="font-semibold text-foreground">{count}</span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+            {shiftMap.size === 0 && <p className="text-xs text-muted-foreground text-center py-4">Chưa có dữ liệu</p>}
+          </div>
+        </div>
+      </div>
+
+      {/* Danh sách thiếu hôm nay */}
+      {todayMissing > 0 && (
+        <div className="bg-white rounded-2xl border border-red-100 shadow-sm p-5">
+          <h3 className="font-semibold text-foreground text-sm mb-3 flex items-center gap-2">
+            <AlertCircle size={16} className="text-red-500" />
+            Nhân viên thiếu chấm công hôm nay ({todayMissing})
+          </h3>
+          <div className="space-y-2">
+            {todayGrouped
+              .filter(g => !(g.records.some(r => r.action_type === "check-in") && g.records.some(r => r.action_type === "check-out")))
+              .map((g, i) => {
+                const hasIn = g.records.some(r => r.action_type === "check-in");
+                const hasOut = g.records.some(r => r.action_type === "check-out");
+                return (
+                  <div key={i} className="flex items-center justify-between bg-red-50/50 rounded-xl px-3 py-2">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{g.full_name}</p>
+                      <p className="text-xs text-muted-foreground">{g.employee_id} · {g.shift}</p>
+                    </div>
+                    <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+                      {hasIn ? "Thiếu out" : hasOut ? "Thiếu in" : "Chưa chấm"}
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
+// Tab: Records
+// ──────────────────────────────────────────────────────
+function RecordsTab({ allRecords, onRefresh }: { allRecords: AttendanceRecord[]; onRefresh: () => void }) {
+  const [filterEmployeeId, setFilterEmployeeId] = useState("");
+  const [filterName, setFilterName] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
+  const [modalImage, setModalImage] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 12;
+
+  const grouped = groupByEmployee(allRecords);
+
+  const filtered = grouped.filter(g => {
+    const hasIn = g.records.some(r => r.action_type === "check-in");
+    const hasOut = g.records.some(r => r.action_type === "check-out");
+    if (filterStatus === "complete" && !(hasIn && hasOut)) return false;
+    if (filterStatus === "incomplete" && hasIn && hasOut) return false;
+    if (filterEmployeeId && !g.employee_id.toLowerCase().includes(filterEmployeeId.toLowerCase())) return false;
+    if (filterName && !g.full_name.toLowerCase().includes(filterName.toLowerCase())) return false;
+    if (filterDateFrom && g.work_date < filterDateFrom) return false;
+    if (filterDateTo && g.work_date > filterDateTo) return false;
+    return true;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  const paginated = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+
+  const handleDelete = async (g: GroupedEmployee) => {
+    const key = `${g.employee_id}__${g.work_date}`;
+    if (!confirm(`Xóa toàn bộ dữ liệu chấm công của ${g.full_name} ngày ${g.work_date}?`)) return;
+    setDeletingKey(key);
+    const ids = g.records.map(r => r.id);
+    await supabase.from("attendance").delete().in("id", ids);
+    onRefresh();
+    setDeletingKey(null);
+  };
+
+  const clearFilters = () => {
+    setFilterEmployeeId(""); setFilterName(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterStatus("all"); setPage(1);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-sm text-foreground">Bộ lọc</h3>
+          <div className="flex gap-2">
+            <button onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition">
+              <X size={12} />Xóa lọc
+            </button>
+            <button
+              onClick={() => exportCSV(filtered)}
+              className="flex items-center gap-1.5 text-xs bg-green-500 text-white px-3 py-1.5 rounded-lg hover:bg-green-600 transition font-medium"
+            >
+              <Download size={12} />
+              Xuất CSV ({filtered.length})
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+          <input type="text" placeholder="Mã NV..." value={filterEmployeeId} onChange={e => { setFilterEmployeeId(e.target.value); setPage(1); }}
+            className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          <input type="text" placeholder="Tên NV..." value={filterName} onChange={e => { setFilterName(e.target.value); setPage(1); }}
+            className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          <input type="date" value={filterDateFrom} onChange={e => { setFilterDateFrom(e.target.value); setPage(1); }}
+            className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          <input type="date" value={filterDateTo} onChange={e => { setFilterDateTo(e.target.value); setPage(1); }}
+            className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          <select value={filterStatus} onChange={e => { setFilterStatus(e.target.value as FilterStatus); setPage(1); }}
+            className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition">
+            <option value="all">Tất cả</option>
+            <option value="complete">Hoàn thành</option>
+            <option value="incomplete">Thiếu</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+          <p className="text-sm font-semibold text-foreground">
+            {filtered.length} kết quả
+          </p>
+        </div>
+        {filtered.length === 0 ? (
+          <div className="p-16 text-center text-muted-foreground text-sm">Không có dữ liệu</div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 border-b border-border">
+                  <tr>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide w-24">Trạng thái</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Mã NV</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Họ tên</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Ngày</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Ca</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Check-in</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Check-out</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Ảnh</th>
+                    <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide w-12"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {paginated.map((g, idx) => {
+                    const hasIn = g.records.some(r => r.action_type === "check-in");
+                    const hasOut = g.records.some(r => r.action_type === "check-out");
+                    const isComplete = hasIn && hasOut;
+                    const inRec = g.records.find(r => r.action_type === "check-in");
+                    const outRec = g.records.find(r => r.action_type === "check-out");
+                    const images = g.records.filter(r => r.image_url).map(r => ({ url: r.image_url!, type: r.action_type }));
+                    const key = `${g.employee_id}__${g.work_date}`;
+                    const isDeleting = deletingKey === key;
+                    return (
+                      <tr key={idx} data-testid={`row-${g.employee_id}-${g.work_date}`}
+                        className="hover:bg-muted/20 transition-colors">
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold ${isComplete ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${isComplete ? "bg-green-500" : "bg-red-500"}`} />
+                            {isComplete ? "Đủ" : "Thiếu"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs font-bold text-foreground">{g.employee_id}</td>
+                        <td className="px-4 py-3 text-foreground font-medium">{g.full_name}</td>
+                        <td className="px-4 py-3 text-muted-foreground text-xs">{g.work_date}</td>
+                        <td className="px-4 py-3 text-muted-foreground text-xs max-w-[100px] truncate">{g.shift.split("(")[0].trim()}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {inRec ? (
+                            <span className="text-green-600 font-medium">
+                              {new Date(inRec.created_at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          {outRec ? (
+                            <span className="text-blue-600 font-medium">
+                              {new Date(outRec.created_at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1">
+                            {images.map((img, i) => (
+                              <button key={i} onClick={() => setModalImage(img.url)}
+                                className="relative w-8 h-8 rounded-lg overflow-hidden border border-border hover:ring-2 hover:ring-primary/40 transition group">
+                                <img src={img.url} alt="ảnh" className="w-full h-full object-cover" />
+                                <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                  <Search size={10} className="text-white" />
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <button onClick={() => handleDelete(g)} disabled={isDeleting}
+                            className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 transition disabled:opacity-50">
+                            {isDeleting ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+                <p className="text-xs text-muted-foreground">{(page - 1) * PER_PAGE + 1}–{Math.min(page * PER_PAGE, filtered.length)} / {filtered.length}</p>
+                <div className="flex gap-2 items-center">
+                  <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="p-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 transition"><ChevronLeft size={14} /></button>
+                  <span className="text-sm font-medium px-2">{page} / {totalPages}</span>
+                  <button disabled={page === totalPages} onClick={() => setPage(p => p + 1)} className="p-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 transition"><ChevronRight size={14} /></button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Image Modal */}
+      {modalImage && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setModalImage(null)}>
+          <div className="relative max-w-lg w-full" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setModalImage(null)} className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-lg hover:bg-red-50 transition z-10">
+              <X size={16} />
+            </button>
+            <img src={modalImage} alt="Ảnh chấm công" className="w-full rounded-2xl shadow-2xl" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
+// Tab: Settings
+// ──────────────────────────────────────────────────────
+function SettingsTab() {
+  const [adminPassword, setAdminPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [bannerUrl, setBannerUrl] = useState("");
+  const [savingPw, setSavingPw] = useState(false);
+  const [savingBanner, setSavingBanner] = useState(false);
+  const [msgPw, setMsgPw] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [msgBanner, setMsgBanner] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [showPw, setShowPw] = useState(false);
+
+  useEffect(() => {
+    supabase.from("configs").select("key,value").in("key", ["admin_password", "banner_url"]).then(({ data }) => {
+      if (data) {
+        const pw = data.find((d: { key: string; value: string }) => d.key === "admin_password");
+        const bn = data.find((d: { key: string; value: string }) => d.key === "banner_url");
+        if (pw) setAdminPassword(pw.value);
+        if (bn) setBannerUrl(bn.value);
+      }
+    });
+  }, []);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) { setMsgPw({ type: "err", text: "Mật khẩu xác nhận không khớp." }); return; }
+    if (newPassword.length < 4) { setMsgPw({ type: "err", text: "Mật khẩu phải có ít nhất 4 ký tự." }); return; }
+    if (adminPassword && (await supabase.from("configs").select("value").eq("key", "admin_password").single()).data?.value !== adminPassword) {
+      setMsgPw({ type: "err", text: "Mật khẩu hiện tại không đúng." }); return;
+    }
+    setSavingPw(true);
+    await supabase.from("configs").upsert({ key: "admin_password", value: newPassword }, { onConflict: "key" });
+    setMsgPw({ type: "ok", text: "Đổi mật khẩu thành công!" });
+    setAdminPassword(newPassword); setNewPassword(""); setConfirmPassword("");
+    setSavingPw(false);
+    setTimeout(() => setMsgPw(null), 3000);
+  };
+
+  const handleSaveBanner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingBanner(true);
+    await supabase.from("configs").upsert({ key: "banner_url", value: bannerUrl.trim() }, { onConflict: "key" });
+    setMsgBanner({ type: "ok", text: "Lưu banner thành công!" });
+    setSavingBanner(false);
+    setTimeout(() => setMsgBanner(null), 3000);
+  };
+
+  return (
+    <div className="space-y-5 max-w-lg">
+      {/* Đổi mật khẩu */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
+        <h3 className="font-semibold text-foreground mb-4 flex items-center gap-2">
+          <Lock size={16} className="text-primary" />
+          Đổi mật khẩu Admin
+        </h3>
+        <form onSubmit={handleChangePassword} className="space-y-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Mật khẩu hiện tại</label>
+            <div className="relative">
+              <input type={showPw ? "text" : "password"} value={adminPassword} onChange={e => setAdminPassword(e.target.value)}
+                placeholder="Mật khẩu cũ..."
+                className="w-full px-3 py-2.5 pr-9 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+              <button type="button" onClick={() => setShowPw(s => !s)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Mật khẩu mới</label>
+            <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Mật khẩu mới..."
+              className="w-full px-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Xác nhận mật khẩu mới</label>
+            <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Nhập lại..."
+              className="w-full px-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          </div>
+          {msgPw && (
+            <p className={`text-xs flex items-center gap-1 ${msgPw.type === "ok" ? "text-green-600" : "text-red-500"}`}>
+              {msgPw.type === "ok" ? <CheckCircle size={13} /> : <XCircle size={13} />}
+              {msgPw.text}
+            </p>
+          )}
+          <button type="submit" disabled={savingPw || !newPassword || !confirmPassword}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition disabled:opacity-50">
+            <Save size={14} />
+            {savingPw ? "Đang lưu..." : "Đổi mật khẩu"}
+          </button>
+        </form>
+      </div>
+
+      {/* Banner quảng cáo */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
+        <h3 className="font-semibold text-foreground mb-4 flex items-center gap-2">
+          <TrendingUp size={16} className="text-primary" />
+          Banner quảng cáo
+        </h3>
+        <form onSubmit={handleSaveBanner} className="space-y-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">URL ảnh banner</label>
+            <input type="url" value={bannerUrl} onChange={e => setBannerUrl(e.target.value)} placeholder="https://..."
+              className="w-full px-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          </div>
+          {bannerUrl && (
+            <img src={bannerUrl} alt="Preview banner" className="w-full rounded-xl object-cover max-h-32 border border-border" onError={e => (e.currentTarget.style.display = "none")} />
+          )}
+          {msgBanner && (
+            <p className={`text-xs flex items-center gap-1 ${msgBanner.type === "ok" ? "text-green-600" : "text-red-500"}`}>
+              {msgBanner.type === "ok" ? <CheckCircle size={13} /> : <XCircle size={13} />}
+              {msgBanner.text}
+            </p>
+          )}
+          <button type="submit" disabled={savingBanner}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition disabled:opacity-50">
+            <Save size={14} />
+            {savingBanner ? "Đang lưu..." : "Lưu banner"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
+// Admin Login Screen
+// ──────────────────────────────────────────────────────
 function AdminLogin({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -32,15 +562,8 @@ function AdminLogin({ onLogin }: { onLogin: () => void }) {
     if (!password.trim()) return;
     setLoading(true);
     setError("");
-
-    const { data } = await supabase
-      .from("configs")
-      .select("value")
-      .eq("key", "admin_password")
-      .single();
-
+    const { data } = await supabase.from("configs").select("value").eq("key", "admin_password").single();
     if (data && data.value === password.trim()) {
-      // Lưu trạng thái đăng nhập vào sessionStorage
       sessionStorage.setItem("admin_auth", "true");
       onLogin();
     } else {
@@ -52,7 +575,6 @@ function AdminLogin({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        {/* Logo */}
         <div className="text-center mb-8 space-y-2">
           <div className="w-16 h-16 bg-primary/20 border border-primary/30 rounded-2xl flex items-center justify-center mx-auto">
             <ShieldCheck size={32} className="text-primary" />
@@ -60,12 +582,7 @@ function AdminLogin({ onLogin }: { onLogin: () => void }) {
           <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
           <p className="text-slate-400 text-sm">Đăng nhập để quản lý hệ thống</p>
         </div>
-
-        {/* Form */}
-        <form
-          onSubmit={handleLogin}
-          className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-6 space-y-4"
-        >
+        <form onSubmit={handleLogin} className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-6 space-y-4">
           <div>
             <label className="text-sm font-medium text-slate-300 mb-1.5 block">Mật khẩu Admin</label>
             <div className="relative">
@@ -78,328 +595,159 @@ function AdminLogin({ onLogin }: { onLogin: () => void }) {
                 autoFocus
                 className="w-full px-4 py-3 pr-10 rounded-xl bg-white/10 border border-white/20 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-primary/60 transition"
               />
-              <button
-                type="button"
-                onClick={() => setShowPassword(s => !s)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition"
-              >
+              <button type="button" onClick={() => setShowPassword(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition">
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
-            {error && (
-              <p data-testid="login-error" className="text-red-400 text-xs mt-1.5 flex items-center gap-1">
-                <Lock size={12} />
-                {error}
-              </p>
-            )}
+            {error && <p data-testid="login-error" className="text-red-400 text-xs mt-1.5">{error}</p>}
           </div>
-
-          <button
-            type="submit"
-            data-testid="btn-admin-login"
-            disabled={loading || !password.trim()}
-            className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {loading ? "Đang kiểm tra..." : "Đăng nhập"}
+          <button type="submit" data-testid="btn-admin-login" disabled={loading || !password.trim()}
+            className="w-full py-3 bg-primary text-white rounded-xl font-semibold text-sm hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
+            {loading ? <><RefreshCw size={14} className="animate-spin" />Đang kiểm tra...</> : "Đăng nhập"}
           </button>
         </form>
-
-        {/* Gợi ý setup */}
         <div className="mt-4 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
           <p className="text-amber-300 text-xs font-medium mb-1">Chưa có mật khẩu?</p>
-          <p className="text-slate-400 text-xs">Chạy SQL sau trong Supabase:</p>
-          <code className="block mt-1 text-xs text-slate-300 bg-black/30 rounded-lg px-3 py-2 font-mono break-all">
-            INSERT INTO configs (key, value) VALUES ('admin_password', 'matkhaucuaban');
+          <p className="text-slate-400 text-xs">Chạy SQL này trong Supabase SQL Editor:</p>
+          <code className="block mt-1 text-xs text-slate-300 bg-black/30 rounded-lg px-3 py-2 font-mono">
+            INSERT INTO configs (key, value)<br/>
+            VALUES ('admin_password', 'matkhau123');
           </code>
         </div>
-
         <div className="mt-4 text-center">
-          <Link
-            href="/"
-            className="text-slate-500 hover:text-slate-300 text-xs transition"
-          >
-            Quay lại trang chấm công
-          </Link>
+          <Link href="/" className="text-slate-500 hover:text-slate-300 text-xs transition">Quay lại trang chấm công</Link>
         </div>
       </div>
     </div>
   );
 }
 
-// ──────────────────────────────────────────
-// Dashboard Admin (sau khi đăng nhập)
-// ──────────────────────────────────────────
+// ──────────────────────────────────────────────────────
+// Admin Dashboard Shell
+// ──────────────────────────────────────────────────────
 function AdminDashboard({ onLogout }: { onLogout: () => void }) {
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [allRecords, setAllRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterEmployeeId, setFilterEmployeeId] = useState("");
-  const [filterDateFrom, setFilterDateFrom] = useState("");
-  const [filterDateTo, setFilterDateTo] = useState("");
-  const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
-  const [modalImage, setModalImage] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
-  const PER_PAGE = 10;
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const fetchRecords = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     setLoading(true);
-    let query = supabase.from("attendance").select("*").order("created_at", { ascending: false });
-    if (filterEmployeeId.trim()) query = query.ilike("employee_id", `%${filterEmployeeId.trim()}%`);
-    if (filterDateFrom) query = query.gte("work_date", filterDateFrom);
-    if (filterDateTo) query = query.lte("work_date", filterDateTo);
-    const { data } = await query;
-    setRecords((data || []) as AttendanceRecord[]);
-    setPage(1);
+    const { data } = await supabase.from("attendance").select("*").order("created_at", { ascending: false });
+    setAllRecords((data || []) as AttendanceRecord[]);
     setLoading(false);
-  }, [filterEmployeeId, filterDateFrom, filterDateTo]);
+  }, []);
 
-  useEffect(() => { fetchRecords(); }, [fetchRecords]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  const grouped = groupByEmployee(records);
+  const handleLogout = () => { sessionStorage.removeItem("admin_auth"); onLogout(); };
 
-  const filtered = grouped.filter(g => {
-    const hasIn = g.records.some(r => r.action_type === "check-in");
-    const hasOut = g.records.some(r => r.action_type === "check-out");
-    const isComplete = hasIn && hasOut;
-    if (filterStatus === "complete") return isComplete;
-    if (filterStatus === "incomplete") return !isComplete;
-    return true;
-  });
-
-  const totalPages = Math.ceil(filtered.length / PER_PAGE);
-  const paginated = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-
-  const handleLogout = () => {
-    sessionStorage.removeItem("admin_auth");
-    onLogout();
-  };
+  const navItems: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "overview", label: "Tổng quan", icon: <LayoutDashboard size={18} /> },
+    { id: "records", label: "Dữ liệu chấm công", icon: <ClipboardList size={18} /> },
+    { id: "settings", label: "Cài đặt", icon: <Settings size={18} /> },
+  ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
-      <header className="bg-white/90 backdrop-blur-md border-b border-border sticky top-0 z-30">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ShieldCheck size={20} className="text-primary" />
-            <span className="font-bold text-foreground text-lg">Admin Dashboard</span>
+    <div className="min-h-screen bg-muted/30 flex">
+      {/* Sidebar overlay on mobile */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/40 z-20 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* Sidebar */}
+      <aside className={`fixed top-0 left-0 h-full w-60 bg-sidebar text-sidebar-foreground z-30 flex flex-col transition-transform duration-300 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0 lg:static lg:flex`}>
+        {/* Logo */}
+        <div className="flex items-center gap-3 px-5 py-5 border-b border-sidebar-border">
+          <div className="w-8 h-8 bg-primary/20 rounded-lg flex items-center justify-center">
+            <ShieldCheck size={18} className="text-sidebar-primary" />
           </div>
-          <div className="flex gap-1 items-center">
-            <Link
-              href="/"
-              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg text-muted-foreground hover:bg-accent transition"
-            >
-              <Camera size={14} />
-              Chấm công
-            </Link>
-            <Link
-              href="/tra-cuu"
-              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg text-muted-foreground hover:bg-accent transition"
-            >
-              <Search size={14} />
-              Tra cứu
-            </Link>
+          <div>
+            <p className="font-bold text-sm">Admin Panel</p>
+            <p className="text-xs text-sidebar-foreground/50">Hệ thống chấm công</p>
+          </div>
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-4 space-y-1">
+          {navItems.map(item => (
             <button
-              data-testid="btn-logout"
-              onClick={handleLogout}
-              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg text-red-500 hover:bg-red-50 transition ml-1"
+              key={item.id}
+              onClick={() => { setActiveTab(item.id); setSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-left ${
+                activeTab === item.id
+                  ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              }`}
             >
-              <LogOut size={14} />
-              Đăng xuất
+              {item.icon}
+              {item.label}
             </button>
-          </div>
-        </div>
-      </header>
+          ))}
+        </nav>
 
-      <main className="max-w-6xl mx-auto px-4 py-6 space-y-5">
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-4">
-          <div className="bg-white rounded-2xl p-4 border border-border shadow-sm text-center">
-            <p className="text-2xl font-bold text-primary">{grouped.length}</p>
-            <p className="text-xs text-muted-foreground mt-1">Tổng lượt</p>
-          </div>
-          <div className="bg-white rounded-2xl p-4 border border-border shadow-sm text-center">
-            <p className="text-2xl font-bold text-green-600">
-              {grouped.filter(g => g.records.some(r => r.action_type === "check-in") && g.records.some(r => r.action_type === "check-out")).length}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">Hoàn thành</p>
-          </div>
-          <div className="bg-white rounded-2xl p-4 border border-border shadow-sm text-center">
-            <p className="text-2xl font-bold text-red-500">
-              {grouped.filter(g => !(g.records.some(r => r.action_type === "check-in") && g.records.some(r => r.action_type === "check-out"))).length}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">Thiếu</p>
-          </div>
+        {/* Divider links */}
+        <div className="px-3 py-3 border-t border-sidebar-border space-y-1">
+          <Link href="/" className="flex items-center gap-3 px-3 py-2 rounded-xl text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent transition">
+            <Camera size={14} />Trang chấm công
+          </Link>
+          <Link href="/tra-cuu" className="flex items-center gap-3 px-3 py-2 rounded-xl text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent transition">
+            <Search size={14} />Tra cứu
+          </Link>
+          <button onClick={handleLogout} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 transition">
+            <LogOut size={14} />Đăng xuất
+          </button>
         </div>
+      </aside>
 
-        {/* Filters */}
-        <div className="bg-white rounded-2xl border border-border shadow-sm p-4 space-y-3">
-          <h3 className="font-semibold text-sm text-foreground">Bộ lọc</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <input
-              data-testid="filter-employee-id"
-              type="text"
-              placeholder="Mã NV..."
-              value={filterEmployeeId}
-              onChange={e => setFilterEmployeeId(e.target.value)}
-              className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition"
-            />
-            <input
-              data-testid="filter-date-from"
-              type="date"
-              value={filterDateFrom}
-              onChange={e => setFilterDateFrom(e.target.value)}
-              className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition"
-            />
-            <input
-              data-testid="filter-date-to"
-              type="date"
-              value={filterDateTo}
-              onChange={e => setFilterDateTo(e.target.value)}
-              className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition"
-            />
-            <select
-              data-testid="filter-status"
-              value={filterStatus}
-              onChange={e => setFilterStatus(e.target.value as FilterStatus)}
-              className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition"
-            >
-              <option value="all">Tất cả</option>
-              <option value="complete">Hoàn thành</option>
-              <option value="incomplete">Thiếu</option>
-            </select>
+      {/* Main content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Top bar */}
+        <header className="bg-white/80 backdrop-blur-md border-b border-border sticky top-0 z-10 px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setSidebarOpen(s => !s)} className="p-2 rounded-lg hover:bg-muted transition lg:hidden">
+              <Menu size={18} />
+            </button>
+            <h1 className="font-bold text-foreground">
+              {navItems.find(n => n.id === activeTab)?.label}
+            </h1>
           </div>
-        </div>
+          <div className="flex items-center gap-2">
+            <button onClick={fetchAll} disabled={loading}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition px-2 py-1.5 rounded-lg hover:bg-muted">
+              <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+              Làm mới
+            </button>
+            <span className="text-xs text-muted-foreground hidden sm:inline">{allRecords.length} bản ghi</span>
+          </div>
+        </header>
 
-        {/* Table */}
-        <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        {/* Tab content */}
+        <main className="flex-1 p-4 lg:p-6 overflow-auto">
           {loading ? (
-            <div className="p-12 text-center text-muted-foreground text-sm">Đang tải...</div>
-          ) : filtered.length === 0 ? (
-            <div className="p-12 text-center text-muted-foreground text-sm">Không có dữ liệu</div>
+            <div className="flex items-center justify-center h-48 text-muted-foreground text-sm gap-2">
+              <RefreshCw size={16} className="animate-spin" />Đang tải...
+            </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 border-b border-border">
-                    <tr>
-                      <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Trạng thái</th>
-                      <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Mã NV</th>
-                      <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Tên</th>
-                      <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Ngày</th>
-                      <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Ca</th>
-                      <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Ảnh</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {paginated.map((g, idx) => {
-                      const hasIn = g.records.some(r => r.action_type === "check-in");
-                      const hasOut = g.records.some(r => r.action_type === "check-out");
-                      const isComplete = hasIn && hasOut;
-                      const images = g.records.filter(r => r.image_url).map(r => r.image_url!);
-                      return (
-                        <tr
-                          key={idx}
-                          data-testid={`row-employee-${g.employee_id}-${g.work_date}`}
-                          className="hover:bg-muted/30 transition-colors"
-                        >
-                          <td className="px-4 py-3">
-                            <span
-                              data-testid={`status-dot-${g.employee_id}-${g.work_date}`}
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
-                                isComplete ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                              }`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${isComplete ? "bg-green-500" : "bg-red-500"}`} />
-                              {isComplete ? "Đủ" : "Thiếu"}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 font-mono font-semibold text-foreground">{g.employee_id}</td>
-                          <td className="px-4 py-3 text-foreground">{g.full_name}</td>
-                          <td className="px-4 py-3 text-muted-foreground">{g.work_date}</td>
-                          <td className="px-4 py-3 text-muted-foreground text-xs">{g.shift}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex gap-1.5">
-                              {images.map((img, i) => (
-                                <button
-                                  key={i}
-                                  data-testid={`img-btn-${g.employee_id}-${i}`}
-                                  onClick={() => setModalImage(img)}
-                                  className="w-8 h-8 rounded-lg overflow-hidden border border-border hover:ring-2 hover:ring-primary/40 transition"
-                                >
-                                  <img src={img} alt="ảnh" className="w-full h-full object-cover" />
-                                </button>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {totalPages > 1 && (
-                <div className="flex items-center justify-between px-4 py-3 border-t border-border">
-                  <p className="text-xs text-muted-foreground">
-                    {(page - 1) * PER_PAGE + 1}–{Math.min(page * PER_PAGE, filtered.length)} / {filtered.length}
-                  </p>
-                  <div className="flex gap-2 items-center">
-                    <button
-                      data-testid="btn-prev-page"
-                      disabled={page === 1}
-                      onClick={() => setPage(p => p - 1)}
-                      className="p-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 transition"
-                    >
-                      <ChevronLeft size={14} />
-                    </button>
-                    <span className="text-sm font-medium px-2">{page} / {totalPages}</span>
-                    <button
-                      data-testid="btn-next-page"
-                      disabled={page === totalPages}
-                      onClick={() => setPage(p => p + 1)}
-                      className="p-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 transition"
-                    >
-                      <ChevronRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              )}
+              {activeTab === "overview" && <OverviewTab allRecords={allRecords} />}
+              {activeTab === "records" && <RecordsTab allRecords={allRecords} onRefresh={fetchAll} />}
+              {activeTab === "settings" && <SettingsTab />}
             </>
           )}
-        </div>
-      </main>
-
-      {/* Image Modal */}
-      {modalImage && (
-        <div
-          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
-          onClick={() => setModalImage(null)}
-        >
-          <div className="relative max-w-lg w-full" onClick={e => e.stopPropagation()}>
-            <button
-              data-testid="btn-close-modal"
-              onClick={() => setModalImage(null)}
-              className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow-lg hover:bg-red-50 transition z-10"
-            >
-              <X size={16} />
-            </button>
-            <img src={modalImage} alt="Ảnh chấm công" className="w-full rounded-2xl shadow-2xl" />
-          </div>
-        </div>
-      )}
+        </main>
+      </div>
     </div>
   );
 }
 
-// ──────────────────────────────────────────
-// Wrapper: kiểm tra đăng nhập
-// ──────────────────────────────────────────
+// ──────────────────────────────────────────────────────
+// Root Export
+// ──────────────────────────────────────────────────────
 export default function Admin() {
   const [isAuthenticated, setIsAuthenticated] = useState(
     () => sessionStorage.getItem("admin_auth") === "true"
   );
-
-  if (!isAuthenticated) {
-    return <AdminLogin onLogin={() => setIsAuthenticated(true)} />;
-  }
-
+  if (!isAuthenticated) return <AdminLogin onLogin={() => setIsAuthenticated(true)} />;
   return <AdminDashboard onLogout={() => setIsAuthenticated(false)} />;
 }

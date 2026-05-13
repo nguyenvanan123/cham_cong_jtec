@@ -25,3 +25,16 @@ export type Config = {
   key: string;
   value: string;
 };
+
+export type JobApplication = {
+  id: string;
+  full_name: string;
+  cccd_front_url: string;
+  cccd_back_url: string;
+  referrer_name: string;
+  referrer_id: string;
+  bank_account: string;
+  status: string;
+  shopee_link?: string | null;
+  created_at: string;
+};

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import type { AttendanceRecord } from "@/lib/supabase";
+import type { AttendanceRecord, JobApplication } from "@/lib/supabase";
 import { Link } from "wouter";
 import {
   Camera, Search, X, ChevronLeft, ChevronRight,
@@ -8,14 +8,16 @@ import {
   LayoutDashboard, ClipboardList, Settings,
   Download, Trash2, CheckCircle, XCircle,
   AlertCircle, Menu, Save, RefreshCw,
-  TrendingUp, Clock, CheckCheck
+  TrendingUp, Clock, CheckCheck,
+  UserPlus, Megaphone, ToggleLeft, ToggleRight,
+  ExternalLink, Image as ImageIcon
 } from "lucide-react";
 
 // ──────────────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────────────
 type FilterStatus = "all" | "complete" | "incomplete";
-type Tab = "overview" | "records" | "settings";
+type Tab = "overview" | "records" | "applications" | "settings";
 
 type GroupedEmployee = {
   employee_id: string;
@@ -424,6 +426,229 @@ function RecordsTab({ allRecords, onRefresh }: { allRecords: AttendanceRecord[];
 }
 
 // ──────────────────────────────────────────────────────
+// Tab: Job Applications
+// ──────────────────────────────────────────────────────
+function JobApplicationsTab() {
+  const [apps, setApps] = useState<JobApplication[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filterName, setFilterName] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [page, setPage] = useState(1);
+  const [modalImages, setModalImages] = useState<{ front: string | null; back: string | null } | null>(null);
+  const [loadingImages, setLoadingImages] = useState(false);
+  const PER_PAGE = 10;
+
+  const fetchApps = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("job_applications").select("*").order("created_at", { ascending: false });
+    setApps((data || []) as JobApplication[]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchApps(); }, [fetchApps]);
+
+  const handleViewCCCD = async (app: JobApplication) => {
+    setLoadingImages(true);
+    setModalImages({ front: null, back: null });
+    const [{ data: frontData }, { data: backData }] = await Promise.all([
+      supabase.storage.from("application_docs").createSignedUrl(app.cccd_front_url, 300),
+      supabase.storage.from("application_docs").createSignedUrl(app.cccd_back_url, 300),
+    ]);
+    setModalImages({
+      front: frontData?.signedUrl ?? null,
+      back: backData?.signedUrl ?? null,
+    });
+    setLoadingImages(false);
+  };
+
+  const handleStatusChange = async (id: string, status: string) => {
+    await supabase.from("job_applications").update({ status }).eq("id", id);
+    setApps(prev => prev.map(a => a.id === id ? { ...a, status } : a));
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Xóa đơn ứng tuyển này?")) return;
+    await supabase.from("job_applications").delete().eq("id", id);
+    setApps(prev => prev.filter(a => a.id !== id));
+  };
+
+  const filtered = apps.filter(a => {
+    if (filterName && !a.full_name.toLowerCase().includes(filterName.toLowerCase())) return false;
+    if (filterStatus !== "all" && a.status !== filterStatus) return false;
+    return true;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  const paginated = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+
+  const statusColor: Record<string, string> = {
+    pending: "bg-amber-100 text-amber-700",
+    approved: "bg-green-100 text-green-700",
+    rejected: "bg-red-100 text-red-600",
+  };
+  const statusLabel: Record<string, string> = {
+    pending: "Chờ duyệt",
+    approved: "Đã duyệt",
+    rejected: "Từ chối",
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Stats mini */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { label: "Tổng đơn", value: apps.length, color: "text-primary" },
+          { label: "Chờ duyệt", value: apps.filter(a => a.status === "pending").length, color: "text-amber-600" },
+          { label: "Đã duyệt", value: apps.filter(a => a.status === "approved").length, color: "text-green-600" },
+        ].map(s => (
+          <div key={s.label} className="bg-white rounded-2xl border border-border shadow-sm p-4 text-center">
+            <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm p-4">
+        <div className="flex gap-3 flex-wrap">
+          <input type="text" placeholder="Tìm theo tên..." value={filterName}
+            onChange={e => { setFilterName(e.target.value); setPage(1); }}
+            className="flex-1 min-w-40 px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          <select value={filterStatus} onChange={e => { setFilterStatus(e.target.value); setPage(1); }}
+            className="px-3 py-2 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition">
+            <option value="all">Tất cả trạng thái</option>
+            <option value="pending">Chờ duyệt</option>
+            <option value="approved">Đã duyệt</option>
+            <option value="rejected">Từ chối</option>
+          </select>
+          <button onClick={fetchApps} className="px-3 py-2 rounded-xl border border-input text-sm text-muted-foreground hover:bg-muted transition flex items-center gap-1.5">
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+            Làm mới
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
+        {loading ? (
+          <div className="p-12 text-center text-muted-foreground text-sm">Đang tải...</div>
+        ) : filtered.length === 0 ? (
+          <div className="p-12 text-center text-muted-foreground text-sm">Chưa có đơn ứng tuyển nào.</div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 border-b border-border">
+                  <tr>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Trạng thái</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Họ tên</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Người GT</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">STK NH</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ngày nộp</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">CCCD</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide w-28">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {paginated.map(app => (
+                    <tr key={app.id} data-testid={`app-row-${app.id}`} className="hover:bg-muted/20 transition-colors">
+                      <td className="px-4 py-3">
+                        <select
+                          value={app.status}
+                          onChange={e => handleStatusChange(app.id, e.target.value)}
+                          className={`text-xs font-semibold px-2 py-1 rounded-full border-0 focus:outline-none cursor-pointer ${statusColor[app.status] || "bg-gray-100 text-gray-600"}`}
+                        >
+                          <option value="pending">Chờ duyệt</option>
+                          <option value="approved">Đã duyệt</option>
+                          <option value="rejected">Từ chối</option>
+                        </select>
+                      </td>
+                      <td className="px-4 py-3 font-medium text-foreground">{app.full_name}</td>
+                      <td className="px-4 py-3 text-muted-foreground text-xs">
+                        {app.referrer_name || "—"}
+                        {app.referrer_id && <span className="block text-muted-foreground/60">{app.referrer_id}</span>}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-foreground">{app.bank_account}</td>
+                      <td className="px-4 py-3 text-muted-foreground text-xs">
+                        {new Date(app.created_at).toLocaleDateString("vi-VN")}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          data-testid={`btn-view-cccd-${app.id}`}
+                          onClick={() => handleViewCCCD(app)}
+                          className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 bg-primary/10 px-2.5 py-1 rounded-lg transition"
+                        >
+                          <ImageIcon size={12} />
+                          Xem CCCD
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => handleDelete(app.id)}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 transition">
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+                <p className="text-xs text-muted-foreground">{(page - 1) * PER_PAGE + 1}–{Math.min(page * PER_PAGE, filtered.length)} / {filtered.length}</p>
+                <div className="flex gap-2 items-center">
+                  <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="p-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 transition"><ChevronLeft size={14} /></button>
+                  <span className="text-sm font-medium px-2">{page} / {totalPages}</span>
+                  <button disabled={page === totalPages} onClick={() => setPage(p => p + 1)} className="p-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 transition"><ChevronRight size={14} /></button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* CCCD Modal */}
+      {modalImages && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setModalImages(null)}>
+          <div className="relative w-full max-w-lg bg-white rounded-2xl overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <h3 className="font-semibold text-foreground">Ảnh CCCD</h3>
+              <button onClick={() => setModalImages(null)} className="p-1.5 rounded-lg hover:bg-muted transition"><X size={16} /></button>
+            </div>
+            <div className="p-4 space-y-4">
+              {loadingImages ? (
+                <div className="py-12 text-center text-muted-foreground text-sm flex items-center justify-center gap-2">
+                  <RefreshCw size={16} className="animate-spin" />Đang tải ảnh...
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground mb-2">Mặt trước</p>
+                    {modalImages.front ? (
+                      <img src={modalImages.front} alt="CCCD mặt trước" className="w-full rounded-xl border border-border object-cover" />
+                    ) : (
+                      <div className="aspect-video bg-muted rounded-xl flex items-center justify-center text-xs text-muted-foreground">Không tải được</div>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground mb-2">Mặt sau</p>
+                    {modalImages.back ? (
+                      <img src={modalImages.back} alt="CCCD mặt sau" className="w-full rounded-xl border border-border object-cover" />
+                    ) : (
+                      <div className="aspect-video bg-muted rounded-xl flex items-center justify-center text-xs text-muted-foreground">Không tải được</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
 // Tab: Settings
 // ──────────────────────────────────────────────────────
 function SettingsTab() {
@@ -436,16 +661,29 @@ function SettingsTab() {
   const [msgPw, setMsgPw] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [msgBanner, setMsgBanner] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [showPw, setShowPw] = useState(false);
+  // Popup state
+  const [popupStatus, setPopupStatus] = useState("off");
+  const [popupTitle, setPopupTitle] = useState("");
+  const [popupContent, setPopupContent] = useState("");
+  const [recruitmentLink, setRecruitmentLink] = useState("");
+  const [shopeeLink, setShopeeLink] = useState("");
+  const [savingPopup, setSavingPopup] = useState(false);
+  const [msgPopup, setMsgPopup] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
-    supabase.from("configs").select("key,value").in("key", ["admin_password", "banner_url"]).then(({ data }) => {
-      if (data) {
-        const pw = data.find((d: { key: string; value: string }) => d.key === "admin_password");
-        const bn = data.find((d: { key: string; value: string }) => d.key === "banner_url");
-        if (pw) setAdminPassword(pw.value);
-        if (bn) setBannerUrl(bn.value);
-      }
-    });
+    supabase.from("configs").select("key,value")
+      .in("key", ["admin_password", "banner_url", "popup_status", "popup_title", "popup_content", "recruitment_link", "shopee_link"])
+      .then(({ data }) => {
+        if (!data) return;
+        const get = (key: string) => (data as { key: string; value: string }[]).find(d => d.key === key)?.value ?? "";
+        setAdminPassword(get("admin_password"));
+        setBannerUrl(get("banner_url"));
+        setPopupStatus(get("popup_status") || "off");
+        setPopupTitle(get("popup_title") || "Cơ hội việc làm");
+        setPopupContent(get("popup_content") || "Chúng tôi đang tuyển dụng!");
+        setRecruitmentLink(get("recruitment_link") || "/ung-tuyen");
+        setShopeeLink(get("shopee_link"));
+      });
   }, []);
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -470,6 +708,26 @@ function SettingsTab() {
     setMsgBanner({ type: "ok", text: "Lưu banner thành công!" });
     setSavingBanner(false);
     setTimeout(() => setMsgBanner(null), 3000);
+  };
+
+  const handleTogglePopup = async () => {
+    const next = popupStatus === "on" ? "off" : "on";
+    setPopupStatus(next);
+    await supabase.from("configs").upsert({ key: "popup_status", value: next }, { onConflict: "key" });
+  };
+
+  const handleSavePopup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingPopup(true);
+    await Promise.all([
+      supabase.from("configs").upsert({ key: "popup_title", value: popupTitle }, { onConflict: "key" }),
+      supabase.from("configs").upsert({ key: "popup_content", value: popupContent }, { onConflict: "key" }),
+      supabase.from("configs").upsert({ key: "recruitment_link", value: recruitmentLink }, { onConflict: "key" }),
+      supabase.from("configs").upsert({ key: "shopee_link", value: shopeeLink }, { onConflict: "key" }),
+    ]);
+    setMsgPopup({ type: "ok", text: "Lưu cài đặt popup thành công!" });
+    setSavingPopup(false);
+    setTimeout(() => setMsgPopup(null), 3000);
   };
 
   return (
@@ -541,6 +799,74 @@ function SettingsTab() {
             className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition disabled:opacity-50">
             <Save size={14} />
             {savingBanner ? "Đang lưu..." : "Lưu banner"}
+          </button>
+        </form>
+      </div>
+
+      {/* Quản lý Popup tuyển dụng */}
+      <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-foreground flex items-center gap-2">
+            <Megaphone size={16} className="text-primary" />
+            Popup tuyển dụng
+          </h3>
+          <button
+            type="button"
+            onClick={handleTogglePopup}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all ${
+              popupStatus === "on"
+                ? "bg-green-100 text-green-700 hover:bg-green-200"
+                : "bg-muted text-muted-foreground hover:bg-muted/70"
+            }`}
+          >
+            {popupStatus === "on" ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+            {popupStatus === "on" ? "Đang bật" : "Đang tắt"}
+          </button>
+        </div>
+        <form onSubmit={handleSavePopup} className="space-y-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Tiêu đề popup</label>
+            <input type="text" value={popupTitle} onChange={e => setPopupTitle(e.target.value)}
+              placeholder="VD: Cơ hội việc làm"
+              className="w-full px-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Nội dung popup</label>
+            <textarea value={popupContent} onChange={e => setPopupContent(e.target.value)}
+              rows={3} placeholder="Mô tả ngắn về tuyển dụng..."
+              className="w-full px-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition resize-none" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Link trang ứng tuyển</label>
+            <div className="relative">
+              <ExternalLink size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input type="text" value={recruitmentLink} onChange={e => setRecruitmentLink(e.target.value)}
+                placeholder="/ung-tuyen hoặc https://..."
+                className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">
+              Link Shopee (mở sau khi nộp đơn)
+            </label>
+            <div className="relative">
+              <ExternalLink size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input type="text" value={shopeeLink} onChange={e => setShopeeLink(e.target.value)}
+                placeholder="https://shp.ee/..."
+                className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition" />
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">Sau khi ứng viên nộp đơn, sẽ tự động mở link này sau 3 giây.</p>
+          </div>
+          {msgPopup && (
+            <p className={`text-xs flex items-center gap-1 ${msgPopup.type === "ok" ? "text-green-600" : "text-red-500"}`}>
+              {msgPopup.type === "ok" ? <CheckCircle size={13} /> : <XCircle size={13} />}
+              {msgPopup.text}
+            </p>
+          )}
+          <button type="submit" disabled={savingPopup}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-semibold hover:opacity-90 transition disabled:opacity-50">
+            <Save size={14} />
+            {savingPopup ? "Đang lưu..." : "Lưu cài đặt popup"}
           </button>
         </form>
       </div>
@@ -645,6 +971,7 @@ function AdminDashboard({ onLogout }: { onLogout: () => void }) {
   const navItems: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "overview", label: "Tổng quan", icon: <LayoutDashboard size={18} /> },
     { id: "records", label: "Dữ liệu chấm công", icon: <ClipboardList size={18} /> },
+    { id: "applications", label: "Quản lý ứng tuyển", icon: <UserPlus size={18} /> },
     { id: "settings", label: "Cài đặt", icon: <Settings size={18} /> },
   ];
 
@@ -732,6 +1059,7 @@ function AdminDashboard({ onLogout }: { onLogout: () => void }) {
             <>
               {activeTab === "overview" && <OverviewTab allRecords={allRecords} />}
               {activeTab === "records" && <RecordsTab allRecords={allRecords} onRefresh={fetchAll} />}
+              {activeTab === "applications" && <JobApplicationsTab />}
               {activeTab === "settings" && <SettingsTab />}
             </>
           )}

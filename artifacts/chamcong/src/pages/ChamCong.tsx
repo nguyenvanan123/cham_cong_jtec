@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import type { AttendanceRecord, Config } from "@/lib/supabase";
 import { Link } from "wouter";
-import { Camera, RefreshCw, Send, CheckCircle, XCircle, AlertCircle, Search, BarChart3 } from "lucide-react";
+import { Camera, RefreshCw, Send, CheckCircle, XCircle, AlertCircle, Search, BarChart3, Megaphone, X as XIcon } from "lucide-react";
 
 const SHIFTS = ["Ca sáng (6:00 - 14:00)", "Ca chiều (14:00 - 22:00)", "Ca tối (22:00 - 6:00)", "Hành chính (8:00 - 17:00)"];
 
@@ -21,14 +21,32 @@ export default function ChamCong() {
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [showPopup, setShowPopup] = useState(false);
+  const [popupTitle, setPopupTitle] = useState("Cơ hội việc làm");
+  const [popupContent, setPopupContent] = useState("Chúng tôi đang tuyển dụng! Bấm xem chi tiết.");
+  const [recruitmentLink, setRecruitmentLink] = useState("/ung-tuyen");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    supabase.from("configs").select("*").eq("key", "banner_url").single().then(({ data }) => {
-      if (data) setBanner((data as Config).value);
-    });
+    supabase.from("configs").select("key,value")
+      .in("key", ["banner_url", "popup_status", "popup_title", "popup_content", "recruitment_link"])
+      .then(({ data }) => {
+        if (!data) return;
+        const get = (key: string) => (data as Config[]).find(d => d.key === key)?.value;
+        const bUrl = get("banner_url");
+        if (bUrl) setBanner(bUrl);
+        const pTitle = get("popup_title");
+        if (pTitle) setPopupTitle(pTitle);
+        const pContent = get("popup_content");
+        if (pContent) setPopupContent(pContent);
+        const rLink = get("recruitment_link");
+        if (rLink) setRecruitmentLink(rLink);
+        if (get("popup_status") === "on") {
+          setTimeout(() => setShowPopup(true), 800);
+        }
+      });
   }, []);
 
   const showToast = useCallback((type: "success" | "error" | "info", message: string) => {
@@ -336,6 +354,50 @@ export default function ChamCong() {
           </button>
         </form>
       </main>
+
+      {/* Popup tuyển dụng */}
+      {showPopup && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden animate-in slide-in-from-bottom-6 duration-400">
+            {/* Header popup */}
+            <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 pt-5 pb-4 relative">
+              <button
+                onClick={() => setShowPopup(false)}
+                className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition"
+              >
+                <XIcon size={16} className="text-white" />
+              </button>
+              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center mb-3">
+                <Megaphone size={20} className="text-white" />
+              </div>
+              <h3 className="text-white font-bold text-lg leading-tight">{popupTitle}</h3>
+            </div>
+            {/* Body */}
+            <div className="px-5 py-4">
+              <p className="text-muted-foreground text-sm leading-relaxed">{popupContent}</p>
+            </div>
+            {/* Actions */}
+            <div className="px-5 pb-5 flex gap-3">
+              <button
+                onClick={() => setShowPopup(false)}
+                className="flex-1 py-2.5 border border-border rounded-xl text-sm text-muted-foreground hover:bg-muted transition font-medium"
+              >
+                Để sau
+              </button>
+              <Link
+                href={recruitmentLink.startsWith("http") ? "#" : recruitmentLink}
+                onClick={() => {
+                  setShowPopup(false);
+                  if (recruitmentLink.startsWith("http")) window.open(recruitmentLink, "_blank");
+                }}
+                className="flex-1 py-2.5 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl text-sm font-semibold text-center hover:opacity-90 transition"
+              >
+                Xem chi tiết
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
